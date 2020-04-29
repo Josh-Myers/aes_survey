@@ -1,0 +1,808 @@
+---
+title: "Determinants of Voting Behaviour in Recent Australian Elections"
+author: "Joshua Myers"
+output:
+  html_document:
+    code_folding: hide
+    pdf_document: default
+  pdf_document: default
+bibliography: bibliography.bib
+---
+
+```{r, message=F, warning=F}
+# load packages
+library(MASS) 
+library(tidyverse)
+library(mice)
+library(rms)
+library(pROC)
+library(cowplot)
+library(skimr)
+library(knitr)
+```
+
+# Abstract
+The 2016 and 2019 Australian federal elections were both won by the Liberal-National Coalition (LNP).The Australian Election Study (AES) longitudinally surveyed voters after each election with questions in two main categories: attitudes towards election issues, such as the economy and education, and background information such as age, occupation and religion. The purpose of this study was to mine the AES survey data for insights into factors that shaped the choices of LNP voters in the 2016 and 2019 elections. Logistic regression was used to model the probability of voting LNP by fitting three models: one using only responses on election issues, another using background information only, and a third using responses from both categories. Models were fitted on a training sample, with a penalty applied to minimise over fitting, and robust standard errors used to account for repeated observations on respondents between the two elections. The model that used the election issues responses only was the best fitting, and was taken as the final model for further evaluation and interpretation. The model had high discriminative ability on the training sample with area under the receiver operating characteristic curve (AUC-ROC) of 0.94, which generalised well to the validation sample with AUC-ROC of 0.90. LNP voters were more likely to agree that the unions were too powerful, list the economy and superannuation as important issues, disagree that big business was too powerful, think the economy had improved compared to the previous year, and agree that all boats should be turned back. The model had high discriminative ability, and gave insight into the most important issues for voters who voted for the LNP in the 2016 and 2019 elections. 
+
+# Introduction
+
+The Liberal-National Coalition (LNP) was victorious in both the July 2016 and May 2019 federal elections. The LNP narrowly won in 2016, and again retained power in 2019 in defiance of the predictions of all the major polls [@aes]. The Australian Election Study (AES) longitudinally surveyed voters after the 2016 and 2019 elections, asking voters which party they voted for, attitudes toward election issues, such as the economy and climate change, and background information such as gender, religion and occupation [@aes].  
+
+The purpose of this study was to mine the AES survey results to investigate factors that shaped the voting behaviour of LNP voters in the House of Representatives in the 2016 and 2019 elections.
+
+# Data
+
+```{r}
+# longitudinal election survey data https://dataverse.ada.edu.au/dataset.xhtml?persistentId=doi:10.26193/C2QIYA
+# prepare data for analysis
+# import csv, setting various reasons for missing to na 
+survey_data = read.csv('aespanel.csv', na=c(995, 996, 997, 998, 999, 99997, 99999, -99, 97, -4, -3, -2))
+names(survey_data)[1:2] = c('year', 'id')
+
+# select cols to keep
+survey_df = dplyr::select(survey_data, year, id, A1, A3, A7_1, A8_2, A8_3, A8_4, A8_5, A10, A12, A14_4, B1, B9_1, B9_2, D3_1, D3_2, D4_1, D4_2, 
+            D13_2, D13_3, E6_1, E6_2, E6_3, E6_4, E6_5, E6_6, E7, E8_1, E8_2, F8_1, F8_2, F8_3, F9, G1_Age, G2, G3, G4,
+            G5_Code, G5_E, G6, H1, H2, H6, H8, H9, H10, H11, H15, H16, H17, H18, Final_STATE)
+
+names(survey_df) = c('year', 'id', 'interest_politics_A1', 'interest_election_campaign_A3', 'party_contact_A7_1', 
+              'contact_liberal_A8_2', 'contact_labour_A8_3', 'contact_national_A8_4', 'contact_greens_A8_5', 
+              'compulsory_vote_A10', 'lower_vote_age_A12', 'online_political_group_A14_4', 'political_affiliation_B1', 
+              'vote_reps_B9_1', 'vote_senate_B9_2', 'most_important_issue_D3_1', 'second_important_issue_D3_2', 
+              'personal_finances_12_months_D4_1', 'economy_12_months_D4_2', 'unions_powerful_D13_2', 
+              'banks_powerful_D13_3', 'death_penalty_E6_1', 'marijuana_legal_E6_2','harsher_penalties_E6_3', 
+              'women_preferential_E6_4', 'turn_back_boats_E6_5', 'euthanasia_E6_6', 'indigenous_constitution_E7',
+              'first_priority_E8_1', 'second_priority_E8_2', 'immigrants_crime_F8_1', 'immigrants_good_economy_F8_2', 
+              'immigrants_take_jobs_F8_3', 'global_warming_F9', 'age_left_school_G1_Age', 'years_tertiary_study_G2', 
+              'qualification_G3', 'doing_last_week_G4', 'occupation_G5_Code', 'who_work_for_G5_E', 'belong_union_G6', 
+              'gender_H1', 'year_birth_H2', 'religion_H6', 'marital_status_H8', 'own_home_H9', 'investment_properties_H10', 
+              'self_managed_super_H11', 'social_class_H15', 'size_town_H16', 'annual_income_H17', 'own_shares_H18', 
+              'state_Final_STATE')
+
+# label factor variables with informative names and combine infrequent levels
+survey_df$year = factor(survey_df$year, levels = 1:2, labels = c("2016", "2019"))
+survey_df$interest_politics_A1 = factor(survey_df$interest_politics_A1, 
+                                 levels = 1:4, 
+                                 labels = c('Much', 'Some', 'Not much', 'None'), ordered = T)
+survey_df$interest_election_campaign_A3 = factor(survey_df$interest_election_campaign_A3, 
+                                          levels = 1:4, 
+                                          labels = c('Much', "Some", "Not much", 'None'), ordered = T)
+survey_df$party_contact_A7_1 = factor(survey_df$party_contact_A7_1, 
+                               levels = 0:1, 
+                               labels = c('No', 'Yes'))
+survey_df$contact_liberal_A8_2 = factor(survey_df$contact_liberal_A8_2, 
+                                 levels = 0:1, 
+                                 labels = c('No', 'Yes'))
+survey_df$contact_labour_A8_3 = factor(survey_df$contact_labour_A8_3, 
+                                levels = 0:1, 
+                                labels = c('No', 'Yes'))
+survey_df$contact_national_A8_4 = factor(survey_df$contact_national_A8_4, levels = c(0, 1), labels = c('No', 'Yes'))
+survey_df$contact_greens_A8_5 = factor(survey_df$contact_greens_A8_5, levels = c(0, 1), labels = c('No', 'Yes'))
+survey_df$compulsory_vote_A10 = factor(survey_df$compulsory_vote_A10, 
+                               levels = 1:4, 
+                               labels = c('Strongly favour compulsory', 'Favour compulsory', 
+                                          'Favour optional', 'Strongly favour optional'), ordered = T)
+survey_df$lower_vote_age_A12 = factor(survey_df$lower_vote_age_A12, 
+                               levels = 1:4, 
+                               labels = c("Definitely lower to 16", 'Probably lower to 16',
+                                          'Probably stay at 18', 'Definitely stay at 18'), ordered = T)
+survey_df$online_political_group_A14_4 = factor(survey_df$online_political_group_A14_4, 
+                                         levels = 0:1, 
+                                         labels = c("No", "Yes"))
+
+# lump <50 as other
+survey_df$political_affiliation_B1 = as.factor(survey_df$political_affiliation_B1)
+survey_df$political_affiliation_B1 = fct_lump_min(survey_df$political_affiliation_B1, 50)
+survey_df$political_affiliation_B1 = factor(survey_df$political_affiliation_B1, 
+                                     levels = c('1', '2', '3', '4', '6', 'Other'), 
+                                     labels = c('Liberal', "Labour", "National", "Greens", "No Party", "Other")) 
+survey_df$vote_reps_B9_1 = as.factor(survey_df$vote_reps_B9_1)
+survey_df$vote_reps_B9_1 = fct_lump_min(survey_df$vote_reps_B9_1, 50)
+survey_df$vote_reps_B9_1 = factor(survey_df$vote_reps_B9_1, 
+                           levels = c('1', '2', '3', '4', 'Other'), 
+                           labels = c('Liberal', 'Labour', 'National', 'Greens', 'Other')) 
+survey_df$vote_senate_B9_2 = as.factor(survey_df$vote_senate_B9_2)
+survey_df$vote_senate_B9_2 = fct_lump_min(survey_df$vote_senate_B9_2, 50)
+survey_df$vote_senate_B9_2 = factor(survey_df$vote_senate_B9_2, 
+                             levels = c('1', '2', '3', '4', 'Other'), 
+                             labels = c('Liberal', 'Labour', 'National', 'Greens', 'Other')) 
+survey_df$most_important_issue_D3_1 = factor(survey_df$most_important_issue_D3_1, 
+                                      levels = 1:10, 
+                                      labels = c('Taxation', "Immigration", "Education", "The environment", 'Government debt',
+                                                 'Health and Medicare', 'Refugees and asylum seekers', 'Global warming',
+                                                 'Superannuation', "Managing the economy"))
+survey_df$second_important_issue_D3_2 = factor(survey_df$second_important_issue_D3_2, 
+                                        levels = 1:10, 
+                                        labels = c('Taxation', "Immigration", "Education", "The environment", 'Government debt',
+                                                   'Health and Medicare', 'Refugees and asylum seekers', 'Global warming',
+                                                   'Superannuation', "Managing the economy"))
+survey_df$personal_finances_12_months_D4_1 = factor(survey_df$personal_finances_12_months_D4_1, 
+                                             levels = 1:5, 
+                                             labels = c('A lot better', 'A little better', 'About the same', 
+                                                        'A little worse', 'A lot worse'), ordered = T)
+survey_df$economy_12_months_D4_2 = factor(survey_df$economy_12_months_D4_2, 
+                                   levels = 1:5, 
+                                   labels = c('A lot better', 'A little better', 'About the same', 
+                                              'A little worse', 'A lot worse'), ordered = T)
+survey_df$unions_powerful_D13_2 = factor(survey_df$unions_powerful_D13_2, 
+                                  levels = 1:5, 
+                                  labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                             'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$banks_powerful_D13_3 = factor(survey_df$banks_powerful_D13_3, 
+                                 levels = 1:5, 
+                                 labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                            'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$death_penalty_E6_1 = factor(survey_df$death_penalty_E6_1, 
+                               levels = 1:5, 
+                               labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                          'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$marijuana_legal_E6_2 = factor(survey_df$marijuana_legal_E6_2, 
+                                 levels = 1:5, 
+                                 labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                            'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$harsher_penalties_E6_3 = factor(survey_df$harsher_penalties_E6_3, 
+                                   levels = 1:5, 
+                                   labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                              'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$women_preferential_E6_4 = factor(survey_df$women_preferential_E6_4, 
+                                     levels = 1:5, 
+                                     labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                                'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$turn_back_boats_E6_5 = factor(survey_df$turn_back_boats_E6_5, 
+                                 levels = 1:5, 
+                                 labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                            'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$euthanasia_E6_6 = factor(survey_df$euthanasia_E6_6, 
+                            levels = 1:5, 
+                            labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                       'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$indigenous_constitution_E7 = factor(survey_df$indigenous_constitution_E7, 
+                                       levels = 1:4, 
+                                       labels = c('Strongly support', 'Support', 
+                                                  'Oppose', 'Strongly oppose'), ordered = T)
+survey_df$first_priority_E8_1 = factor(survey_df$first_priority_E8_1, 
+                                levels = 1:4, 
+                                labels = c('Maintain order', 'People more say in government decisions', 
+                                           'Fight rising prices', 'Protect freedom of speech'))
+survey_df$second_priority_E8_2 = factor(survey_df$second_priority_E8_2, 
+                                 levels = 1:4, 
+                                 labels = c('Maintain order', 'People more say in government decisions', 
+                                            'Fight rising prices', 'Protect freedom of speech'))
+survey_df$immigrants_crime_F8_1 = factor(survey_df$immigrants_crime_F8_1, 
+                                  levels = 1:5, 
+                                  labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                             'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$immigrants_good_economy_F8_2 = factor(survey_df$immigrants_good_economy_F8_2, 
+                                         levels = 1:5, 
+                                         labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                                    'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$immigrants_take_jobs_F8_3 = factor(survey_df$immigrants_take_jobs_F8_3, 
+                                      levels = 1:5, 
+                                      labels = c('Strongly agree', 'Agree', 'Neither agree or disagree', 
+                                                 'Disagree', 'Strongly disagree'), ordered = T)
+survey_df$global_warming_F9 = factor(survey_df$global_warming_F9, 
+                              levels = 1:4, 
+                              labels = c('Very serious', 'Fairly serious', 'Not very serious', "Not at all serious"), ordered = T)
+survey_df$qualification_G3 = factor(survey_df$qualification_G3, 
+                             levels = 1:7, 
+                             labels = c('None', 'Postgraduate', 'Bachelor', 'Undergraduate diploma', 'Associate diploma', 
+                                        'Trade', 'Non-trade qualification'))
+survey_df$qualification_G3 = fct_recode(survey_df$qualification_G3,
+                                 Undergraduate = "Undergraduate diploma",
+                                 Undergraduate = "Associate diploma")
+survey_df$doing_last_week_G4 = factor(survey_df$doing_last_week_G4, 
+                               levels = 1:8, 
+                               labels = c('Working full-time', 'Working part-time', 'Unemployed looking for full-time', 
+                                          'Unemployed looking for part-time', 'Retired', "Student", 'Carer', 'Other'))
+survey_df$doing_last_week_G4 = fct_recode(survey_df$doing_last_week_G4,
+                                   Unemployed = "Unemployed looking for full-time",
+                                   Unemployed = "Unemployed looking for part-time")
+survey_df$occupation_G5_Code = factor(survey_df$occupation_G5_Code, 
+                               levels = 1:9, 
+                               labels = c('Manager', 'Professional', "Technician or Trade", 'Community and Personal Service',
+                                          'Clerical and Administrative', 'Sales', "Machinery Operator", "Labourer", "Other"))
+survey_df$who_work_for_G5_E = factor(survey_df$who_work_for_G5_E, 
+                              levels = 1:4, 
+                              labels = c('Self-employed', "Company", "Government", "Family business"))
+survey_df$belong_union_G6 = factor(survey_df$belong_union_G6, 
+                            levels = 1:2, 
+                            labels = c('Yes', 'No'))
+survey_df$gender_H1 = factor(survey_df$gender_H1, 
+                      levels = 1:2, 
+                      labels = c('Male', 'Female'))
+survey_df$religion_H6 = factor(survey_df$religion_H6, 
+                        levels = 1:24, 
+                        labels = c('Roman Catholic', 'Anglican', 'Uniting', 'Orthodox', "Presbyterian", "Other", 'No religion',
+                                   'Non-Roman Catholic', 'Armenian apostolic', 'Baptist', 'Brethren', 'Churches of Christ',
+                                   'Latter Day Saints', 'Lutheran', "Salvation Army", 'Seventh Day Adventist', 'Other Protestant',
+                                   'Other Christian', 'Buddhist', 'Hebrew/Jewish', 'Muslim', 'Other Non-Christian', 'Hindu',
+                                   'Pentecostalism'))
+survey_df$religion_H6 = fct_recode(survey_df$religion_H6,
+                            'Roman Catholic' = 'Roman Catholic', 
+                            'Anglican'= 'Anglican', 
+                            'Uniting'= 'Uniting', 
+                            'Other Christian'= 'Orthodox', 
+                            'Presbyterian'= "Presbyterian", 
+                            'Other'= "Other", 
+                            'No religion'= 'No religion',
+                            'Other Christian'= 'Non-Roman Catholic', 
+                            'Other Christian'= 'Armenian apostolic', 
+                            'Other Christian'= 'Baptist', 
+                            'Other Christian'= 'Brethren', 
+                            'Other Christian'= 'Churches of Christ',
+                            'Other Christian'= 'Latter Day Saints', 
+                            'Other Christian'= 'Lutheran', 
+                            'Other Christian'= "Salvation Army", 
+                            'Other Christian'= 'Seventh Day Adventist', 
+                            'Other Christian'= 'Other Protestant',
+                            'Other Christian'= 'Other Christian', 
+                            'Other'= 'Buddhist', 
+                            'Other'= 'Hebrew/Jewish', 
+                            'Other'= 'Muslim', 
+                            'Other'= 'Other Non-Christian', 
+                            'Other'= 'Hindu',
+                            'Other Christian'= 'Pentecostalism')
+survey_df$marital_status_H8 = factor(survey_df$marital_status_H8, 
+                              levels = 1:4, 
+                              labels = c('Never married', 'Married', 'Widowed', 'Divorced or separated'))
+survey_df$own_home_H9 = factor(survey_df$own_home_H9, 
+                        levels = 1:5,
+                        labels = c('Own', 'Paying mortgage', 'Rent private', 'Rent public', 'Other'))
+survey_df$investment_properties_H10 = factor(survey_df$investment_properties_H10, 
+                                      levels = 1:2,
+                                      labels = c('Yes', "No"))
+survey_df$self_managed_super_H11 = factor(survey_df$self_managed_super_H11, 
+                                   levels = 1:2, 
+                                   labels = c('Yes', 'No'))
+survey_df$social_class_H15 = factor(survey_df$social_class_H15, 
+                             levels = 1:4, 
+                             labels = c('Upper', "Middle", 'Working', 'None'))
+survey_df$size_town_H16 = factor(survey_df$size_town_H16, 
+                          levels = 1:5, 
+                          labels = c('Rural', "Small country town", "Large country town", "Large town", "City"), ordered = T)
+survey_df$annual_income_H17 = factor(survey_df$annual_income_H17, 
+                              levels = 1:22,
+                              labels = c('<10', '10-15', '15-20', '20-25', '25-30', '30-35', '35-40', '40-45', '45-50', '50-60', '60-70', '70-80', '80-90', '90-100', '100-110', '110-120', '120-130', '130-140', '140-150', '150-160', '160-180', '>180'))
+# collapse into groups of $50K
+survey_df$annual_income_H17 = fct_recode(survey_df$annual_income_H17,
+                                  "<50"= "<10",
+                                  "<50"= "10-15",
+                                  "<50"= "15-20",
+                                  "<50"= "20-25",
+                                  "<50"= "25-30",
+                                  "<50"= "30-35",
+                                  "<50"= "35-40",
+                                  "<50"= "40-45",
+                                  "<50" = "45-50",
+                                  "50-100"= "50-60",
+                                  "50-100"= "60-70",
+                                  "50-100"= "70-80",
+                                  "50-100"= "80-90",
+                                  "50-100"= "90-100",
+                                  "100-150"= "100-110",
+                                  "100-150"= "110-120",
+                                  "100-150"= "120-130",
+                                  "100-150"= "130-140",
+                                  "100-150" = "140-150",
+                                  ">150"= "150-160",
+                                  ">150"= "160-180",
+                                  ">150"= ">180")
+survey_df$annual_income_H17 = factor(survey_df$annual_income_H17, ordered = T)
+# change to yes/no
+survey_df$own_shares_H18 = factor(survey_df$own_shares_H18, 
+                           levels = 1:5, 
+                           labels = c('No', "Yes, 1 company", "Yes 2-5 companies", 'Yes 6-10', 'Yes >10'))
+survey_df$own_shares_H18 = fct_lump_min(survey_df$own_shares_H18, 300, other_level = 'Yes')
+survey_df$state_Final_STATE = factor(survey_df$state_Final_STATE, 
+                              levels = 1:8, 
+                              labels = c('NSW', "Vic", "Qld", "SA", 'WA', "Tas", "NT", 'ACT'))
+
+# rename variables
+names(survey_df) = c('year', 'id', 'interest_politics', 'interest_election_campaign', 'party_contact', 'contact_liberal', 
+              'contact_labour', 'contact_national', 'contact_greens', 'compulsory_vote', 'lower_vote_age', 
+              'online_political_group', 'political_affiliation', 'vote_reps', 'vote_senate', 'most_important_issue', 
+              'second_important_issue', 'personal_finances_12_months', 'economy_12_months', 'unions_powerful', 'banks_powerful', 
+              'death_penalty', 'marijuana_legal', 'harsher_penalties', 'women_preferential', 'turn_back_boats', 'euthanasia', 
+              'indigenous_constitution', 'first_priority', 'second_priority', 'immigrants_crime', 'immigrants_good_economy', 
+              'immigrants_take_jobs', 'global_warming', 'age_left_school', 'years_tertiary_study', 'qualification', 
+              'doing_last_week', 'occupation', 'who_work_for', 'belong_union', 'gender', 'year_birth', 'religion',
+              'marital_status', 'own_home', 'investment_properties', 'self_managed_super', 'social_class','size_town', 
+              'annual_income', 'own_shares', 'state')
+
+# some levels had too few resonses - collapse categories with < 100 responses 
+survey_df$interest_politics = fct_recode(survey_df$interest_politics,
+                                         "Not much" = "None")
+survey_df$interest_election_campaign = fct_recode(survey_df$interest_election_campaign,
+                                                  "Not much" = "None")
+survey_df$banks_powerful = fct_recode(survey_df$banks_powerful,
+                                      "Disagree" = "Strongly disagree")
+survey_df$harsher_penalties = fct_recode(survey_df$harsher_penalties,
+                                         "Disagree" = "Strongly disagree")
+survey_df$women_preferential = fct_recode(survey_df$women_preferential,
+                                           "Agree" = "Strongly agree")
+survey_df$euthanasia = fct_recode(survey_df$euthanasia,
+                                  "Disagree" = "Strongly disagree")
+survey_df$immigrants_good_economy = fct_recode(survey_df$immigrants_good_economy,
+                                               'Disagree' = 'Strongly disagree')
+survey_df$immigrants_take_jobs = fct_recode(survey_df$immigrants_take_jobs,
+                                            'Agree' = 'Strongly agree')
+survey_df$doing_last_week = fct_recode(survey_df$doing_last_week,
+                                       "Other" = "Unemployed",
+                                       "Other" = "Student",
+                                       "Other" = "Carer")
+survey_df$occupation = fct_recode(survey_df$occupation,
+                                  "Other" = "Sales",
+                                  "Other" = "Machinery Operator",
+                                  "Other" = "Labourer")
+survey_df$marital_status = fct_recode(survey_df$marital_status,
+                                      "Other" = "Widowed",
+                                      "Other" = "Divorced or separated")
+survey_df$own_home = fct_recode(survey_df$own_home,
+                                "Rent public" = "Other")
+survey_df$social_class = fct_recode(survey_df$social_class,
+                                    "Other" = "Upper",
+                                    "Other" = "None")
+survey_df$size_town = fct_recode(survey_df$size_town,
+                                 "Country town" = "Small country town",
+                                 "Country town" = "Large country town")
+survey_df$lower_vote_age = fct_recode(survey_df$lower_vote_age,
+                                      "Probably lower to 16" = "Definitely lower to 16")
+survey_df$economy_12_months = fct_recode(survey_df$economy_12_months,
+                                         "Better" = "A lot better",
+                                         "Better" = "A little better")
+survey_df$personal_finances_12_months = fct_recode(survey_df$personal_finances_12_months,
+                                                   "Better" = "A lot better",
+                                                   "Better" = "A little better")
+survey_df$political_affiliation = fct_recode(survey_df$political_affiliation,
+                                             "Other" = "National")
+survey_df$vote_senate = fct_recode(survey_df$vote_senate,
+                                   "Other" = "National")
+survey_df$who_work_for = fct_recode(survey_df$who_work_for,
+                                    "Company" = "Family business")
+survey_df$most_important_issue = fct_recode(survey_df$most_important_issue,
+                                            "Immigration and refugees" = "Immigration",
+                                            "Immigration and refugees" = "Refugees and asylum seekers",
+                                            "The economy" = "Government debt",
+                                            "The economy" = "Managing the economy")
+survey_df$second_important_issue = fct_recode(survey_df$second_important_issue,
+                                            "Immigration and refugees" = "Immigration",
+                                            "Immigration and refugees" = "Refugees and asylum seekers",
+                                            "The economy" = "Government debt",
+                                            "The economy" = "Managing the economy")
+survey_df$state = fct_recode(survey_df$state,
+                             "Other" = 'NT',
+                             "Other" = 'ACT',
+                             "Other" = "Tas")
+survey_df$religion = fct_recode(survey_df$religion,
+                                "Other" = "No religion",
+                                "Other Christian" = "Uniting",
+                                "Other Christian" = "Presbyterian")
+survey_df = droplevels(survey_df)
+
+# create variable whether voted lnp or not (the outcome)
+survey_df$vote_lnp = fct_recode(survey_df$vote_reps,
+                                'Yes' = 'Liberal',
+                                'Yes' = 'National',
+                                'No' = 'Labour',
+                                'No' = 'Greens',
+                                'No' = 'Other')
+survey_df$vote_lnp = relevel(survey_df$vote_lnp, 'No') # make LNP the level we will predict
+
+# calculate age
+year = as.numeric(as.character(survey_df$year))
+survey_df$age = year - survey_df$year_birth
+
+# drop only political group - only 24 yes, vote_senate, drop some other unused variables also
+survey_df = dplyr::select(survey_df, -c(online_political_group, political_affiliation, vote_senate, party_contact, contact_liberal, contact_labour, contact_national, contact_greens, year_birth))
+
+survey_df = droplevels(survey_df) # drop unused levels
+
+# create some summaries of variables
+# number of voters who voted lnp, total and number of na for this variable
+n_lnp = survey_df %>% filter(vote_lnp=='Yes') %>% count()
+n_total = survey_df %>% count()
+n_lnp_na = survey_df %>% filter(is.na(vote_lnp)) %>% count()
+
+# drop vote_reps - don't need anymore
+survey_df = survey_df %>%  select(vote_lnp, everything(), -vote_reps)
+
+# summary of dataframe variables
+df_summary = skim(survey_df)
+df_summary = df_summary[, c(2,1,5,6,3)]
+names(df_summary) = c('Name', 'Type', 'Ordered', 'Unique', 'Missing')
+
+# number of factors, numeric, ordered factors
+n_factor = df_summary %>% filter(Type=='factor') %>% count()
+n_num = ncol(survey_df) - n_factor
+n_ordered = df_summary %>%  filter(Type=='factor' & Ordered==TRUE) %>% count()
+max_levels = max(df_summary$Unique)
+min_levels = min(df_summary$Unique)
+n_id = n_distinct(survey_df$id)
+```
+
+The AES was a nationally representative longitudinal survey of Australian voters in the 2016 and 2019 federal elections [@aes]. The data set is available online in both long and wide formats [@aes]. This analysis used the long format data set, which has a column for year, rather than a 2016 and 2019 variable for each question in the survey.  
+
+The long form data set contains `r nrow(survey_data)` observations from `r n_distinct(survey_data$id)` participants, and `r ncol(survey_data)` columns. A subset of `r ncol(survey_df)` columns were selected for this analysis, including respondents' interest in politics, who they voted for in the House of Representatives, attitudes toward election issues such as climate change, the economy and asylum seekers, and background variables such as education, occupation and gender [@aes]. An additional variable `age` was calculated by subtracting `year` (the year that the survey was completed) from `year_of_birth`. The `year_of_birth` variable was subsequently dropped from the data set.
+
+A new variable `vote_lnp` was created that was "Yes" if the voter voted for the Liberal or National Party in the House of Representatives, otherwise "No". This variable served as the outcome for the analysis. A total of `r n_lnp` respondents voted LNP out of the the `r n_total` rows in the data set. Table 1 shows each of the factor variables selected for the analysis, showing the variable name, number of missing observations, whether the factor was ordered, and the number of levels. Table 2 displays information on numeric variables showing the variable name, number missing, and distributional information. Categorical variables with less than 100 responses in a given category were grouped together with other categories. There were 25 variables for which some categories were grouped together in this way. For ordinal variables, infrequent levels were grouped with the closest category (e.g., for the variable `euthanasia` "strongly disagree" was grouped with "disagree"). For nominal variables, categories with fewer than 100 responses were grouped together as "Other". 
+
+```{r}
+# summary table of factor variables
+summary_factor = survey_df %>% 
+  skim() %>% 
+  filter(skim_type == 'factor') %>% 
+  select(skim_variable, n_missing, factor.ordered, factor.n_unique) 
+names(summary_factor) = c("Variable", "Missing (n)", "Ordered", "Levels (n)")
+
+# table 1
+kable(summary_factor, digits = 2, caption = "Table 1. Summary of factor variables showing the name, number of missing values, whether it is ordered, and number of levels.")
+```
+
+```{r}
+# summary table of numeric variables
+summary_numeric = survey_df %>% 
+  select(-id) %>% 
+  skim() %>% 
+  filter(skim_type == 'numeric') %>% 
+  select(skim_variable, n_missing, numeric.mean, numeric.sd, numeric.p0, numeric.p100) 
+names(summary_numeric) = c('Variable', 'Missing (n)', 'Mean', 'SD', 'Minimum', 'Maximum')
+
+# table 2
+kable(summary_numeric, digits = 2, caption = "Table 2. Summary of numeric variables, showing the name, number missing, the mean, standard deviation (SD), minimum and maximum values.")
+```
+
+# Methods
+
+The analysis was conducted in the `RStudio` programming environment using functions from base `R`, and the `tidyverse`, `mice`, `MASS`, `rms`, and `pROC` packages [@r; @rstudio; @tidyverse; @mice; @mass; @rms; @proc]. 
+
+## Missing data
+
+```{r, message=F, warning=F}
+# remove missing outcome - don't want to impute those
+survey_df = survey_df[complete.cases(survey_df$vote_lnp) ,]
+
+# proportion of missing data after missing vote_lnp removed
+n_miss = colSums(is.na(survey_df))
+# number and proportion of variable with most missing values
+max_miss =  max(n_miss)
+max_prop_miss = max(n_miss)/nrow(survey_df) 
+
+# variables with highest number of missing and values
+n_years_tertiary_study_na = survey_df %>% filter(is.na(years_tertiary_study)) %>% count()
+prop_years_tertiary_study_na = round(n_years_tertiary_study_na / nrow(survey_df), 2)
+
+n_who_work_for_na = survey_df %>% filter(is.na(who_work_for)) %>% count()
+prop_who_work_for_na = round(n_who_work_for_na / nrow(survey_df), 2)
+
+n_occupation_na = survey_df %>% filter(is.na(occupation)) %>% count()
+prop_occupation_na = round(n_occupation_na / nrow(survey_df), 2)
+
+n_second_important_issue_na = survey_df %>% filter(is.na(second_important_issue)) %>% count()
+n_year_na = survey_df %>% filter(is.na(year)) %>% count()
+
+# impute missing
+init = mice(survey_df, maxit=0)
+meth = init$method
+pred_mat = init$predictorMatrix
+
+# don't use id and year to impute
+pred_mat[,'id'] = 0
+pred_mat[,'year'] = 0
+meth['id'] = '' # none
+meth['year']=''
+meth['interest_politics'] = 'polr' #ordinal regression
+meth['interest_election_campaign'] = 'polr'
+meth['compulsory_vote'] = 'polr'
+meth['lower_vote_age'] = 'polr'
+meth['most_important_issue'] = 'polyreg' # multinomial logistic regression
+meth['second_important_issue'] = 'polyreg'
+meth['personal_finances_12_months'] = 'polr'
+meth['economy_12_months'] = 'polr'
+meth['unions_powerful'] = 'polr'
+meth['banks_powerful'] = 'polr'
+meth['death_penalty'] = 'polr'
+meth['marijuana_legal'] = 'polr'
+meth['harsher_penalties'] = 'polr'
+meth['women_preferential'] = 'polr'
+meth['turn_back_boats'] = 'polr'
+meth['euthanasia'] = 'polr'
+meth['indigenous_constitution'] = 'polr'
+meth['first_priority'] = 'polyreg'
+meth['second_priority'] = 'polyreg'
+meth['immigrants_crime'] = 'polr'
+meth['immigrants_good_economy'] = 'polr'
+meth['immigrants_take_jobs'] = 'polr'
+meth['global_warming'] = 'polr'
+meth['age_left_school'] = 'pmm' # predictive mean matching
+meth['years_tertiary_study'] = 'pmm'
+meth['qualification'] = 'polyreg'
+meth['doing_last_week'] = 'polyreg'
+meth['occupation'] = 'polyreg'
+meth['who_work_for'] = 'polyreg'
+meth['belong_union'] = 'logreg'
+meth['gender'] = 'logreg'
+meth['religion'] = 'polyreg'
+meth['marital_status'] = 'polyreg'
+meth['own_home'] = 'polyreg'
+meth['investment_properties'] = 'logreg'
+meth['self_managed_super'] = 'logreg'
+meth['social_class'] = 'polyreg'
+meth['size_town'] = 'polr'
+meth['annual_income'] = 'polr'
+meth['own_shares'] = 'logreg'
+meth['state'] = 'polyreg'
+meth['age'] = 'pmm'
+
+# impute missing values
+imputed = mice(survey_df, m=1, method = meth, predictorMatrix = pred_mat, nnet.MaxNWts = 2000, printFlag = F)
+imputed_df = complete(imputed)
+```
+
+The `r n_lnp_na` observations with missing values for `vote_lnp` were removed from the data set, it is generally inadvisable to impute data for the outcome [@cpm]. Tables 1 and 2 show the number of missing values for all of the variables. Of the remaining `r nrow(survey_df)` observations after removing observations with missing `vote_lnp` data, the variable `years_tertiary_study` had the most missing observations, with `r n_years_tertiary_study_na` missing (`r prop_years_tertiary_study_na`). The variable `who_work_for` had the next highest, with `r n_who_work_for_na` (`r prop_who_work_for_na`), followed by `occupation` with `r n_occupation_na` missing (`r prop_occupation_na`). The remaining variables ranged from `r n_second_important_issue_na` for `second_important_issue` missing values to for `r n_year_na` for `year` and `id` (see Tables 1 and 2). The amount of missingness was considered acceptable (<10% for all variables), so missing values were imputed with multiple imputation using the `mice` function from the `mice` package. Numeric variables were imputed using predictive mean matching, binary factors with logistic regression, categorical factors with multinomial logistic regression and ordinal factor variables using ordinal logistic regression [@mice]. 
+
+## Training and validation samples
+
+The imputed data set was split into a training and a validation sample using 70 percent for training and 30 percent for validation using functions from the `dplyr` library [@tidyverse]. The data set was first grouped by respondent `id`, and was split in such a way as that no `id`s in the training sample were included in the validation sample. 
+
+```{r, message=F}
+# create train test variable with no overlapping observations (id) between groups
+set.seed(42) # set the random seed so results are reproducible
+groups = imputed_df %>% 
+  dplyr::select(id) %>% 
+  distinct(id) %>% 
+  rowwise() %>% 
+  mutate(group = sample(c('train', 'test'), 1, replace = TRUE, prob = c(0.7, 0.3)))
+
+imputed_df = imputed_df %>% 
+  left_join(groups)
+
+train = imputed_df %>% 
+  filter(group == 'train') %>% 
+  dplyr::select(-group)
+
+test = imputed_df %>% 
+  filter(group == 'test') %>% 
+  dplyr::select(-group)
+
+# will need id for robust standard errors
+id = dplyr::select(train, id) 
+train = train %>% dplyr::select(-id) # training sample
+test = test %>%  dplyr::select(-id) # validation sample
+```
+
+## Logistic regression modelling
+
+```{r, message=F, warning=F}
+# logistic regression modelling
+# set options for rms package
+dd_train = datadist(train) # create data distribution for fitting
+options(datadist='dd_train') # set the data distribution
+options(contrasts = c('contr.treatment', 'contr.treatment')) # set how to create dummy variables
+
+# label variables for presentation
+label(train$vote_lnp) = "Voted LNP"
+label(train$year) = "Year surveyed"
+label(train$interest_politics) = "Interest in politics"
+label(train$interest_election_campaign) = "Interest in election"
+label(train$compulsory_vote) = "Compulsory vote"
+label(train$lower_vote_age) = "Lower voting age" 
+label(train$most_important_issue) = "Most important issue"
+label(train$second_important_issue) = "Second important issue"
+label(train$personal_finances_12_months) = "Personal finances past year"
+label(train$economy_12_months) = "Economy past year"
+label(train$unions_powerful) = "Unions too powerful"
+label(train$banks_powerful) = "Big business too powerful"
+label(train$death_penalty) = "Death penalty"
+label(train$marijuana_legal) = "Marijuana legal"
+label(train$harsher_penalties) = "Harsher penalties for crime"
+label(train$women_preferential) = "Women preferential treatment"
+label(train$turn_back_boats) = "Turn back all boats"
+label(train$euthanasia) = "Euthanasia"
+label(train$indigenous_constitution) = "Indigenous constitution"
+label(train$first_priority) = "First priority"
+label(train$second_priority) = "Second priority"
+label(train$immigrants_crime) = "Immigrants cause crime"
+label(train$immigrants_good_economy) = "Immigrants good economy"
+label(train$immigrants_take_jobs) = "Immigrants take jobs"
+label(train$global_warming) = "Global warming important"
+label(train$age_left_school) = "Age left school"
+label(train$years_tertiary_study) = "Years of tertiary study"
+label(train$qualification) = "Qualifications"
+label(train$doing_last_week) = "Doing last week"
+label(train$occupation) = "Occupation"
+label(train$who_work_for) = "Who work for"
+label(train$belong_union) = "Belong to union"
+label(train$gender) = "Gender"
+label(train$religion) = "Religion"
+label(train$marital_status) = "Marital Status"
+label(train$own_home) = "Own your home"
+label(train$investment_properties) = "Have investment properties"
+label(train$self_managed_super) = "Have self managed super fund"
+label(train$social_class) = "Social class"
+label(train$size_town) = "Size of town live in"
+label(train$annual_income) = "Annual income"
+label(train$own_shares) = "Own shares"
+label(train$state) = "State"
+label(train$age) = "Age"
+
+# function to calculate evaluation metrics
+model_metrics = function(model, data, sample){
+    preds = predict(model, data, type='fitted')
+    class = ifelse(preds >= 0.5, 1, 0)
+  #  accuracy
+  cm = table(class, data$vote_lnp)
+  accuracy = sum(diag(cm)) / sum(cm)
+  error = 1 - accuracy
+  #  precision
+  precision = cm[2, 2]/sum(cm[2, ]) 
+  #  recall
+  recall = cm[2, 2]/sum(cm[, 2])
+  #  F1 score
+  f1 = 2 * precision * recall/(precision + recall)
+  # auc
+  auroc = auc(roc(data$vote_lnp, preds, quiet = TRUE))
+  results = c(accuracy, error, precision, recall, f1, auroc)
+  metric = c('Accuracy', 'Error', 'Precision', 'Recall', 'F1 score', 'AUC')
+  metrics = data.frame(metric, results)
+  colnames(metrics) = c('Metric', sample)
+  return(metrics)
+}
+
+# function to calculate metrics for train and test sets
+evaluate_model = function(model, train_data, test_data){
+  train_metrics = model_metrics(model, train_data, 'train')
+  test_metrics = model_metrics(model, test_data, 'test')
+  metrics = left_join(train_metrics, test_metrics)
+}
+
+# fit first model - all predictors
+lr_full = lrm(vote_lnp ~., data = train, x=TRUE, y=TRUE)
+
+# calculate gamma
+gamma_full = (920.48 - 124) / 920.48
+
+# apply shrinkage to minimise overfitting
+# choose penalty using aic
+penalty_full = pentrace(lr_full, penalty = seq(0.5, 10, by=0.1), which = 'aic.c')
+lr_full_pen = update(lr_full, penalty=penalty_full$penalty)
+
+# use robust standard errors to interpret important predictors because of observations are not independent
+lr_full_rob = robcov(lr_full_pen, id$id)
+
+# calculate aic
+aic_full = AIC(lr_full_rob)
+
+# background info model
+lr_back = lrm(vote_lnp ~ year + interest_politics + age_left_school + years_tertiary_study + qualification + doing_last_week + occupation + who_work_for + belong_union + gender + religion + marital_status + own_home + investment_properties + self_managed_super + social_class + size_town + annual_income + own_shares + state + age, data = train, x=TRUE, y=TRUE)
+
+# gamma
+gamma_back = (301.34 - 47) / 301.34
+
+# apply shrinkage
+penalty_back = pentrace(lr_back, penalty = seq(0.5, 5, by=0.1))
+lr_back_pen = update(lr_back, penalty=penalty_back$penalty)
+
+# apply robust errors
+lr_back_rob = robcov(lr_back_pen, id$id)
+
+# calculate aic
+aic_back = AIC(lr_back_rob)
+
+# issues model
+lr_issues = lrm(vote_lnp ~ year + interest_politics + interest_election_campaign + compulsory_vote + lower_vote_age + most_important_issue + second_important_issue  + personal_finances_12_months + economy_12_months + unions_powerful + banks_powerful + death_penalty + marijuana_legal + harsher_penalties + women_preferential + turn_back_boats + euthanasia + indigenous_constitution + first_priority + second_priority + immigrants_crime + immigrants_good_economy + immigrants_take_jobs + global_warming, data = train, x=TRUE, y=TRUE)
+
+# gamma
+gamma_issues = (852.40 - 80) / 852.40
+
+# apply shrinkage
+penalty_issues = pentrace(lr_issues, penalty = seq(0.5, 5, by=0.1))
+lr_issues_pen = update(lr_issues, penalty=penalty_issues$penalty)
+
+# apply robust errors
+lr_issues_rob = robcov(lr_issues_pen, id$id)
+
+# calculate aic
+aic_issues = AIC(lr_issues_rob)
+
+# model info for all models
+# combine aics
+Model = c('Full', 'Background', "Issues")
+Gamma = c(gamma_full, gamma_back, gamma_issues)
+Penalty = c(penalty_full$penalty, penalty_back$penalty, penalty_issues$penalty)
+aics = rbind.data.frame(aic_full, aic_back, aic_issues)
+names(aics) = 'AIC'
+
+model_info = cbind.data.frame(Model, Gamma, Penalty, aics)
+
+# model evaluation and interpretation - use issues model - lowest aic
+metrics_issues = evaluate_model(lr_issues_rob, train, test)
+
+# analysis of variance
+anova_issues = anova(lr_issues_rob, vnames = 'labels')
+
+# investigate important predictors in model
+union_pred = Predict(lr_issues_rob, name='unions_powerful', fun=plogis)
+first_issue_pred = Predict(lr_issues_rob, name='most_important_issue', fun=plogis)
+bank_pred = Predict(lr_issues_rob, name='banks_powerful', fun=plogis)
+econ_pred = Predict(lr_issues_rob, name='economy_12_months', fun=plogis)
+boats_pred = Predict(lr_issues_rob, name='turn_back_boats', fun=plogis)
+second_issue_pred = Predict(lr_issues_rob, name = 'second_important_issue', fun = plogis)
+
+# plots of important predictors
+union_plot = ggplot(union_pred, adj.subtitle = F)
+first_issue_plot = ggplot(first_issue_pred, adj.subtitle = F)
+bank_plot = ggplot(bank_pred, adj.subtitle = F)
+econ_plot = ggplot(econ_pred, adj.subtitle = F)
+boat_plot = ggplot(boats_pred, adj.subtitle = F)
+second_issue_plot = ggplot(second_issue_pred, adj.subtitle = F)
+```
+
+Logistic regression was used to model the probability of voting LNP in the training sample using the `lrm` function from the `rms` package [@rms]. Factor variables were prepared for one-hot encoding for modelling by setting `options(contrasts = c('contr.treatment', 'contr.treatment'))` in base `R`. The shrinkage coefficient ($\gamma$) was used to estimate the degree that a model was over fitting on the training set: $$\gamma = \frac{\text{model }\chi^2 - df}{\text{model }\chi^2},$$
+
+where $\text{model }\chi^2$ is the statistical test for the model, and *df* the total degrees of freedom from all variables in the model (e.g., a factor variable with four levels *costs* three *df*). A penalty was applied to the model coefficients if $\gamma$ was less than 0.95, as this indicated that results on the validation sample would likely be more than 5 percent worse than on the training set [@harrell2015]. The shrinkage penalty was chosen by optimising corrected Akaike's information criterion (AIC) on the training sample [@aicc; @harrell2015]. AIC is a measure of model fit that penalises complexity [@harrell2015], and is useful for evaluating model fit with relatively small sample sizes. AIC was a useful criterion for model fit ror this analysis, since there were only 1127 observations from 571 participants in the training sample. 
+
+An assumption of logistic regression is that observations are independent, but this was not the case in the training sample, because respondents were surveyed in both the 2016 and 2019 elections. Violation of this assumption can result in biased standard errors and *p*-values. Therefore, the Huber-White robust standard errors method was used to account for this grouping in the data using the `robcov` function from the `rms` package [@huber; @white; @rms].
+
+The data set had variables in two main categories, attitudes toward election issues, such as the economy and immigration, and background information such as age, occupation and religion. To evaluate the importance of information from these categories, three models were fit on the training sample. One model was fit using only the election issues variables, another using only the background information, and a third used all the variables (both issues and background). The `year` variable that the survey was completed was included in all models. The model with the lowest AIC on the training set was taken as the final model. This process also served as a variable reduction method, since variables from a category of questions were dropped if they did not contribute information to the model [@rms]. 
+
+## Model evaluation and interpretation
+The final model was evaluated on the training and test samples using accuracy, error, precision, recall, F1 score and area under the receiver operating characteristic curve (AUC-ROC). AUC-ROC was calculated using the `auc` and `roc` functions from the `pROC` package [@proc]. 
+
+Analysis of variance (ANOVA) was used to infer important factors contributing to voters voting for the LNP. Variable importance was assessed using the `anova` function in the `rms` package [@rms], which calculated $\chi^2$ statistics for each variable in the model. The six most important variables in the model were investigated graphically for further insights into how these factors affected voting behaviour. 
+
+# Results
+
+## Model fitting
+
+Information for the three fitted models, including $\gamma$, penalty, and AIC is provided in Table 3. The $\gamma$ was less than 0.95 for all three models, so a penalty was applied to each model to reduce over fitting. The penalty was chosen by optimising corrected AIC using the `pentrace` function in the `rms` package. The penalty for each model was applied using the `update` function and robust standard errors with the `robcov` function from the `rms` package [@rms]. The election issues model had the lowest AIC (`r round(aic_issues, 2)`), and was therefore taken as the final model for further evaluation and interpretation. 
+
+## Model evaluation
+
+Table 4 shows the performance metrics for the final model on the training and validation samples. Overall, performance is very high on the training sample (AUC-ROC = 0.94), showing excellent discriminative ability that generalised well to the validation sample (AUC-ROC = 0.9). Other performance metrics also showed high accuracy and validated well, with performance on the validation sample between 3 and 8 percent lower than on the training sample. 
+
+```{r}
+# model info (table 3)
+kable(model_info, digits = 2, caption = "Table 3. Model information for the three fitted models, including the shrinkage coefficient $\\gamma$  (gamma), penalty used and Akaike's information criterion (AIC).")
+```
+
+```{r}
+# model metrics (table 4)
+names(metrics_issues) = c("Metric", "Train", "Validation")
+kable(metrics_issues, digits = 2, caption = "Table 4. Performance metrics for the election issues model on the training and validation samples.")
+```
+
+## Model interpretation
+
+Figure 1 displays the ANOVA results for the election issues model, showing the importance of predictors determined by the amount of $\chi^2$ contributed by a variable. The variable "unions too powerful" is clearly the most important predictor, followed by "most important issue", and then "big business too powerful". The variables "economy past year", "turn back all boats" and "second important issue" area also clearly separated from other variables in terms of the amount of $\chi^2$ contributed to the model.  
+
+```{r, fig.height=10, fig.cap='Figure 1. Importance of predictors in the election issues model in terms of amount of $\\chi^2$ that a variable contributed to the model (*x*-axis), *p*-values for each variable are shown on the right.'}
+# Figure 1: importance of predictors in issues model
+plot(anova_issues, what='chisq', margin = 'P') 
+```
+
+Figure 2 shows how the probability of voting LNP changed for the six most important variables as the factor level changes with all other variables held at typical values. Typical values were the most common level for factor variables and the median for numeric variables. LNP voters were more likely to agree or strongly agree that unions are too powerful, more likely to list the economy as the most important issue, and more likely to either disagree or neither agree or disagree that big business is too powerful. They were more likely to think that the economy had improved over the past year, agree or strongly agree that all refugee asylum seeker boats should be turned back, and were more likely to list superannuation or the economy as the second most important election issue. 
+
+```{r, fig.height=7, fig.cap='Figure 2. The six most important variables in the logistic regression model, showing how the probability (*x*-axis) of voting Liberal changes as the factor level changes with all other variables held at typical values (the most common level for factor variables and the median for numeric values). The points are the prediction, and the lines extending to either side depict the 95% confidence intervals.'}
+# figure 2: the six most important predictors
+plot_grid(union_plot, first_issue_plot, bank_plot, econ_plot, boat_plot, second_issue_plot, nrow = 3, align = 'hv')
+```
+
+# Discussion
+
+```{r}
+# year was not significant - how many voters changed their vote between 2016 and 2019?
+# put in wide form
+imputed_wide = imputed_df %>% pivot_wider(id_cols = id, names_from = year, values_from = vote_lnp)
+change_vote = imputed_wide %>% filter(`2016` != `2019`)
+```
+
+The election issues model indicated that the issues of union power, management of the economy, boat turn-backs and superannuation played a central role in the outcomes of the 2016 and 2019 elections. The issues model was better fitting (lower AIC) than both the full model (all variables), and the background variables model, indicating that knowing where a voter stands on election issues is more informative than knowing their background and demographic information. Furthermore, including background details did not contribute substantial information once attitudes toward election issues were known. This indicates that knowing voters attitudes toward election issues is more important than background or demographic information when predicting voting behaviour. 
+
+Choosing the the best fitting model from a small pool of candidate models served as a data reduction mechanism by excluding 20 variables that did not contribute additional information to the model [@harrell2015]. This process helped to reduce overfitting and made the model easier to interpret [@isl]. The year that the survey was completed was not statistically significant in the final model (*p* = 0.06), indicating that voting behaviour was fairly stable between elections. Indeed, in the data set, of the `r n_distinct(imputed_df)` participants in the data set, only `r nrow(change_vote)` changed their vote between the 2016 and 2019 elections.
+
+An important limitation to this study is that it is not designed to predict future LNP voting behaviour. Whilst the model provided insights into the 2016 and 2019 elections, issues that are important to voters will change over time, and the relative importance may change over time, even for long standing issues such as the economy. 
+
+# Conclusion
+
+This analysis mined the AES survey data set for insights into determinants of LNP voting behaviour in the House of Representatives the 2016 and 2019 federal elections. The election issues model was better fitting than both the background information model and the model using all variables, indicating that voter attitudes toward issues was more informative than background information, and adding background information did not contribute additional information once attitudes toward issues was known. The election issues model had excellent performance on the training sample that generalised well to the validation sample, and gave insight into important issues for LNP voters. LNP voters were more likely agree that unions were too powerful, list the economy and superannuation as important issues, disagree that big business was too powerful, think that the economy had improved in the previous year, and agree that all refugee asylum boats should be turned back. 
+
+# Reference List
